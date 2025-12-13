@@ -23,17 +23,17 @@ module_names = {
 }
 
 c_source_paths = {
-    'slog_':    'sokol-lisp/c/sokol_log.c',
-    'sg_':      'sokol-lisp/c/sokol_gfx.c',
-    'sapp_':    'sokol-lisp/c/sokol_app.c',
-    'stm_':     'sokol-lisp/c/sokol_time.c',
-    'saudio_':  'sokol-lisp/c/sokol_audio.c',
-    'sgl_':     'sokol-lisp/c/sokol_gl.c',
-    'sdtx_':    'sokol-lisp/c/sokol_debugtext.c',
-    'sshape_':  'sokol-lisp/c/sokol_shape.c',
-    'sglue_':   'sokol-lisp/c/sokol_glue.c',
-    'sfetch_':  'sokol-lisp/c/sokol_fetch.c',
-    'sargs_':   'sokol-lisp/c/sokol_args.c',
+    'slog_':    'src/c/sokol_log.c',
+    'sg_':      'src/c/sokol_gfx.c',
+    'sapp_':    'src/c/sokol_app.c',
+    'stm_':     'src/c/sokol_time.c',
+    'saudio_':  'src/c/sokol_audio.c',
+    'sgl_':     'src/c/sokol_gl.c',
+    'sdtx_':    'src/c/sokol_debugtext.c',
+    'sshape_':  'src/c/sokol_shape.c',
+    'sglue_':   'src/c/sokol_glue.c',
+    'sfetch_':  'src/c/sokol_fetch.c',
+    'sargs_':   'src/c/sokol_args.c',
 }
 
 ignores = [
@@ -353,8 +353,8 @@ def gen_module(ir, c_source_path):
             gen_func(decl, prefix)
 
 def prepare():
-    if not os.path.isdir('sokol-lisp'):
-        os.makedirs('sokol-lisp/c')
+    if not os.path.isdir('src'):
+        os.makedirs('src/c')
 
 def gen(c_header_path, main_prefix, dep_prefixes):
     reset_globals()
@@ -384,7 +384,7 @@ def gen(c_header_path, main_prefix, dep_prefixes):
     gen_module(ir, c_source_path)
 
     # Write output file
-    output_path = f'sokol-lisp/{module_name}.lisp'
+    output_path = f'src/{module_name}.lisp'
     with open(output_path, 'w') as f:
         f.write(out_lines)
 
