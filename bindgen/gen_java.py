@@ -2,13 +2,22 @@
 #   gen_java.py
 #
 #   Generate Java 22+ Panama FFM bindings for Sokol.
+#
+#   Usage:
+#     python3 gen_java.py [--output-dir DIR] [--package PACKAGE]
+#
+#   Examples:
+#     python3 gen_java.py
+#     python3 gen_java.py --output-dir ../jsokol/src/main/java/org/sokol/bindings --package org.sokol.bindings
 #-------------------------------------------------------------------------------
 import gen_ir
 import gen_util as util
-import os, shutil, sys, re
+import os, shutil, sys, re, argparse
 
+# Default values (can be overridden via command line)
 bindings_root = 'sokol-java'
 java_root = f'{bindings_root}/sokol'
+package_name = 'sokol'
 
 module_names = {
     'slog_':    'SokolLog',
@@ -85,14 +94,17 @@ value_layouts = {
 
 struct_types = []
 enum_types = []
+struct_info = {}  # Maps struct name -> {'size': int, 'alignment': int}
 out_lines = ''
 
 def reset_globals():
     global struct_types
     global enum_types
+    global struct_info
     global out_lines
     struct_types = []
     enum_types = []
+    struct_info = {}
     out_lines = ''
 
 def l(s):
@@ -258,14 +270,61 @@ def gen_enum(decl, prefix):
             l(f'    public static final int {item_name} = {item["value"]};')
         l('')
 
+# Size and alignment for each ValueLayout (in bytes)
+layout_sizes = {
+    'ValueLayout.JAVA_BOOLEAN': 1,
+    'ValueLayout.JAVA_BYTE': 1,
+    'ValueLayout.JAVA_SHORT': 2,
+    'ValueLayout.JAVA_INT': 4,
+    'ValueLayout.JAVA_LONG': 8,
+    'ValueLayout.JAVA_FLOAT': 4,
+    'ValueLayout.JAVA_DOUBLE': 8,
+    'ValueLayout.ADDRESS': 8,  # 64-bit
+}
+
+def get_layout_size(layout_str, prefix):
+    """Get the size of a layout in bytes"""
+    if layout_str in layout_sizes:
+        return layout_sizes[layout_str]
+    # Struct layout - look it up in struct_info
+    if layout_str.endswith('_LAYOUT'):
+        # Extract struct name: FooBar_LAYOUT -> need to find the original C name
+        java_name = layout_str[:-7]  # Remove '_LAYOUT'
+        for c_name, info in struct_info.items():
+            if as_java_class_name(c_name, prefix) == java_name:
+                return info['size']
+        # Not found - might be from a different prefix, use a default
+        return 8
+    return 8
+
+def get_layout_alignment(layout_str, prefix):
+    """Get the alignment of a layout in bytes"""
+    if layout_str in layout_sizes:
+        return layout_sizes[layout_str]
+    # Struct layout - look it up in struct_info
+    if layout_str.endswith('_LAYOUT'):
+        java_name = layout_str[:-7]
+        for c_name, info in struct_info.items():
+            if as_java_class_name(c_name, prefix) == java_name:
+                return info['alignment']
+        return 8
+    return 8
+
 def gen_struct_layout(decl, prefix):
-    """Generate struct as MemoryLayout"""
-    struct_name = as_java_class_name(decl['name'], prefix)
-    l(f'    // Struct: {decl["name"]}')
+    """Generate struct as MemoryLayout with proper padding"""
+    global struct_info
+    
+    c_struct_name = decl['name']
+    struct_name = as_java_class_name(c_struct_name, prefix)
+    l(f'    // Struct: {c_struct_name}')
     l(f'    public static final StructLayout {struct_name}_LAYOUT = MemoryLayout.structLayout(')
     
     fields = decl.get('fields', [])
-    for i, field in enumerate(fields):
+    max_alignment = 1
+    current_offset = 0
+    field_layouts = []
+    
+    for field in fields:
         if 'name' not in field:
             continue
         field_name = as_java_field_name(field['name'])
@@ -280,6 +339,10 @@ def gen_struct_layout(decl, prefix):
                 base_layout = map_value_layout(base_type, prefix)
                 if base_layout:
                     layout = f'MemoryLayout.sequenceLayout({array_size}, {base_layout}).withName("{field_name}")'
+                    elem_size = get_layout_size(base_layout, prefix)
+                    elem_align = get_layout_alignment(base_layout, prefix)
+                    field_size = elem_size * array_size
+                    field_align = elem_align
                 else:
                     continue
             else:
@@ -289,12 +352,42 @@ def gen_struct_layout(decl, prefix):
             if layout_type is None:
                 continue
             layout = f'{layout_type}.withName("{field_name}")'
+            field_size = get_layout_size(layout_type, prefix)
+            field_align = get_layout_alignment(layout_type, prefix)
         
-        comma = ',' if i < len(fields) - 1 else ''
+        # Track max alignment for the struct
+        if field_align > max_alignment:
+            max_alignment = field_align
+        
+        # Add padding if needed for field alignment
+        alignment_padding = (field_align - (current_offset % field_align)) % field_align
+        if alignment_padding > 0:
+            field_layouts.append(f'MemoryLayout.paddingLayout({alignment_padding})')
+            current_offset += alignment_padding
+        
+        field_layouts.append(layout)
+        current_offset += field_size
+    
+    # Add trailing padding to make struct size a multiple of max alignment
+    trailing_padding = (max_alignment - (current_offset % max_alignment)) % max_alignment
+    if trailing_padding > 0:
+        field_layouts.append(f'MemoryLayout.paddingLayout({trailing_padding})')
+        current_offset += trailing_padding
+    
+    # Record struct info for later lookups
+    struct_info[c_struct_name] = {
+        'size': current_offset,
+        'alignment': max_alignment
+    }
+    
+    # Output all fields
+    for i, layout in enumerate(field_layouts):
+        comma = ',' if i < len(field_layouts) - 1 else ''
         l(f'        {layout}{comma}')
     
-    l(f'    ).withName("{decl["name"]}");')
+    l(f'    ).withName("{c_struct_name}");')
     l('')
+
 
 def gen_func(decl, prefix):
     """Generate function binding"""
@@ -310,6 +403,9 @@ def gen_func(decl, prefix):
     ret_type = ret_match.group(1).strip() if ret_match else 'void'
     java_ret_type = map_java_type(ret_type, prefix)
     ret_layout = map_value_layout(ret_type, prefix)
+    
+    # Check if return type is a struct (needs SegmentAllocator)
+    returns_struct = ret_layout and ret_layout.endswith('_LAYOUT')
     
     # Build parameter list
     params = decl.get('params', [])
@@ -352,11 +448,18 @@ def gen_func(decl, prefix):
     l('        try {')
     
     call_args = ', '.join(as_java_field_name(p['name']) for p in params)
+    
     if java_ret_type == 'void':
         if call_args:
             l(f'            {mh_name}.invokeExact({call_args});')
         else:
             l(f'            {mh_name}.invokeExact();')
+    elif returns_struct:
+        # Struct return - need to pass SegmentAllocator first
+        if call_args:
+            l(f'            return ({java_ret_type}) {mh_name}.invokeExact((SegmentAllocator) Arena.ofAuto(), {call_args});')
+        else:
+            l(f'            return ({java_ret_type}) {mh_name}.invokeExact((SegmentAllocator) Arena.ofAuto());')
     else:
         if call_args:
             l(f'            return ({java_ret_type}) {mh_name}.invokeExact({call_args});')
@@ -368,6 +471,7 @@ def gen_func(decl, prefix):
     l('        }')
     l('    }')
     l('')
+
 
 def gen_module(ir, c_prefix):
     """Generate Java class for a module"""
@@ -385,7 +489,7 @@ def gen_module(ir, c_prefix):
     l('// Auto-generated Java Panama bindings for Sokol')
     l('// DO NOT EDIT - generated by gen_java.py')
     l('')
-    l('package sokol;')
+    l(f'package {package_name};')
     l('')
     l('import java.lang.foreign.*;')
     l('import java.lang.invoke.MethodHandle;')
@@ -488,6 +592,19 @@ def gen(c_header_path, c_prefix, dep_prefixes):
 
 # Standalone execution for testing
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Generate Java Panama FFM bindings for Sokol')
+    parser.add_argument('--output-dir', '-o', 
+                        help='Output directory for generated Java files')
+    parser.add_argument('--package', '-p', default='sokol',
+                        help='Java package name (default: sokol)')
+    args = parser.parse_args()
+    
+    # Update globals based on arguments
+    if args.output_dir:
+        java_root = args.output_dir
+    if args.package:
+        package_name = args.package
+    
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
     tasks = [
