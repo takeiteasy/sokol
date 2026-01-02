@@ -9,31 +9,43 @@ import os, shutil, sys, re
 import gen_util as util
 
 module_names = {
-    'slog_':    'sokol-log',
-    'sg_':      'sokol-gfx',
-    'sapp_':    'sokol-app',
-    'stm_':     'sokol-time',
-    'saudio_':  'sokol-audio',
-    'sgl_':     'sokol-gl',
-    'sdtx_':    'sokol-debugtext',
-    'sshape_':  'sokol-shape',
-    'sglue_':   'sokol-glue',
-    'sfetch_':  'sokol-fetch',
-    'sargs_':   'sokol-args',
+    'slog_':      'sokol-log',
+    'sg_':        'sokol-gfx',
+    'sapp_':      'sokol-app',
+    'stm_':       'sokol-time',
+    'saudio_':    'sokol-audio',
+    'sgl_':       'sokol-gl',
+    'sdtx_':      'sokol-debugtext',
+    'sshape_':    'sokol-shape',
+    'sglue_':     'sokol-glue',
+    'sfetch_':    'sokol-fetch',
+    'sargs_':     'sokol-args',
+    'smemtrack_': 'sokol-memtrack',
+    'sfons_':     'sokol-fontstash',
+    'simgui_':    'sokol-imgui',
+    'sgimgui_':   'sokol-gfx-imgui',
+    'snk_':       'sokol-nuklear',
+    'sspine_':    'sokol-spine',
 }
 
 c_source_paths = {
-    'slog_':    'src/c/sokol_log.c',
-    'sg_':      'src/c/sokol_gfx.c',
-    'sapp_':    'src/c/sokol_app.c',
-    'stm_':     'src/c/sokol_time.c',
-    'saudio_':  'src/c/sokol_audio.c',
-    'sgl_':     'src/c/sokol_gl.c',
-    'sdtx_':    'src/c/sokol_debugtext.c',
-    'sshape_':  'src/c/sokol_shape.c',
-    'sglue_':   'src/c/sokol_glue.c',
-    'sfetch_':  'src/c/sokol_fetch.c',
-    'sargs_':   'src/c/sokol_args.c',
+    'slog_':      'src/c/sokol_log.c',
+    'sg_':        'src/c/sokol_gfx.c',
+    'sapp_':      'src/c/sokol_app.c',
+    'stm_':       'src/c/sokol_time.c',
+    'saudio_':    'src/c/sokol_audio.c',
+    'sgl_':       'src/c/sokol_gl.c',
+    'sdtx_':      'src/c/sokol_debugtext.c',
+    'sshape_':    'src/c/sokol_shape.c',
+    'sglue_':     'src/c/sokol_glue.c',
+    'sfetch_':    'src/c/sokol_fetch.c',
+    'sargs_':     'src/c/sokol_args.c',
+    'smemtrack_': 'src/c/sokol_memtrack.c',
+    'sfons_':     'src/c/sokol_fontstash.c',
+    'simgui_':    'src/c/sokol_imgui.c',
+    'sgimgui_':   'src/c/sokol_gfx_imgui.c',
+    'snk_':       'src/c/sokol_nuklear.c',
+    'sspine_':    'src/c/sokol_spine.c',
 }
 
 ignores = [
@@ -364,17 +376,37 @@ def gen(c_header_path, main_prefix, dep_prefixes):
 
     print(f'  {c_header_path} => {module_name}.lisp')
 
-    # Special handling for sokol_glue - needs sokol_gfx.h included first
+    # Special handling for headers that need sokol_gfx.h included first
     actual_source = c_header_path
-    if main_prefix == 'sglue_':
+    if main_prefix in ['sglue_', 'sgl_', 'sdtx_', 'sshape_', 'sgimgui_']:
         # Create a temporary wrapper header with absolute paths
         import os as os_module
-        wrapper_path = '/tmp/sokol_glue_wrapper.h'
-        gfx_path = os_module.path.abspath('../sokol_gfx.h')
-        glue_path = os_module.path.abspath(c_header_path)
+        wrapper_path = f'/tmp/sokol_{main_prefix}wrapper.h'
+        # Get absolute path from the header path
+        target_path = os_module.path.abspath(c_header_path)
+        # Get the sokol directory (parent of bindgen)
+        bindgen_dir = os_module.path.dirname(os_module.path.abspath(__file__))
+        sokol_dir = os_module.path.dirname(bindgen_dir)
+        gfx_path = os_module.path.join(sokol_dir, 'sokol_gfx.h')
         with open(wrapper_path, 'w') as f:
             f.write(f'#include "{gfx_path}"\n')
-            f.write(f'#include "{glue_path}"\n')
+            f.write(f'#include "{target_path}"\n')
+        actual_source = wrapper_path
+    elif main_prefix == 'simgui_':
+        # sokol_imgui needs both sokol_gfx.h and sokol_app.h
+        import os as os_module
+        wrapper_path = f'/tmp/sokol_{main_prefix}wrapper.h'
+        # Get absolute path from the header path
+        target_path = os_module.path.abspath(c_header_path)
+        # Get the sokol directory (parent of bindgen)
+        bindgen_dir = os_module.path.dirname(os_module.path.abspath(__file__))
+        sokol_dir = os_module.path.dirname(bindgen_dir)
+        gfx_path = os_module.path.join(sokol_dir, 'sokol_gfx.h')
+        app_path = os_module.path.join(sokol_dir, 'sokol_app.h')
+        with open(wrapper_path, 'w') as f:
+            f.write(f'#include "{gfx_path}"\n')
+            f.write(f'#include "{app_path}"\n')
+            f.write(f'#include "{target_path}"\n')
         actual_source = wrapper_path
 
     # Generate IR
@@ -397,22 +429,37 @@ def gen_c_source(header_path, output_path, prefix):
     # Determine implementation macro name
     impl_macro = header_name.upper().replace('.H', '_IMPL').replace('.', '_')
 
-    # Special handling for sokol_glue - needs sokol_gfx.h included first (but not implemented)
-    if prefix == 'sglue_':
+    # Determine if this is a util header
+    is_util = 'util/' in header_path
+    sokol_prefix = '../../sokol/util/' if is_util else '../../sokol/'
+
+    # Special handling for headers that need sokol_gfx.h
+    if prefix in ['sglue_', 'sgl_', 'sdtx_', 'sshape_', 'sgimgui_']:
         content = f'''// Auto-generated C source for {header_name}
 // Compile this file and link with your Common Lisp application
-// Note: This file should be compiled together with sokol_gfx.c or sokol_app.c
+// Note: This file should be compiled together with sokol_gfx.c
 
 #include "../../sokol/sokol_gfx.h"
 #define {impl_macro}
-#include "../../sokol/{header_name}"
+#include "{sokol_prefix}{header_name}"
+'''
+    elif prefix == 'simgui_':
+        # sokol_imgui needs both sokol_gfx.h and sokol_app.h
+        content = f'''// Auto-generated C source for {header_name}
+// Compile this file and link with your Common Lisp application
+// Note: This file should be compiled together with sokol_gfx.c and sokol_app.c
+
+#include "../../sokol/sokol_gfx.h"
+#include "../../sokol/sokol_app.h"
+#define {impl_macro}
+#include "{sokol_prefix}{header_name}"
 '''
     else:
         content = f'''// Auto-generated C source for {header_name}
 // Compile this file and link with your Common Lisp application
 
 #define {impl_macro}
-#include "../../sokol/{header_name}"
+#include "{sokol_prefix}{header_name}"
 '''
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
