@@ -387,6 +387,17 @@ def gen_builder_class(struct_decl, prefix, all_decls):
 
         gen_field_setters(class_name, field, prefix, all_decls, path=[])
 
+    # Check if this descriptor has a corresponding handle type
+    if struct_name in descriptor_types:
+        handle_type = descriptor_types[struct_name]
+        handle_prefix = extract_prefix_part(handle_type, prefix)
+
+        l(f'    // Build the resource from this descriptor')
+        l(f'    {handle_type} build() const {{')
+        l(f'        return {prefix}make_{handle_prefix}(&desc_);')
+        l(f'    }}')
+        l('')
+
     l('};')
     l('')
 
